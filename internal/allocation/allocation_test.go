@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/itzloop/turn/v2/internal/ipnet"
+	"github.com/itzloop/turn/v2/internal/proto"
 	"github.com/pion/stun"
-	"github.com/pion/turn/v2/internal/ipnet"
-	"github.com/pion/turn/v2/internal/proto"
 	"github.com/stretchr/testify/assert"
 )
 

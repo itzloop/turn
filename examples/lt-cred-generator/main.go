@@ -11,8 +11,6 @@ import (
 	"log"
 	"os"
 	"time"
-
-	"github.com/pion/turn/v2"
 )
 
 // Outputs username & password according to the

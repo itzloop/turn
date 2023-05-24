@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //go:build !wasm
+// +build !wasm
 
 // Package main implements a multi-threaded TURN server
 package main
@@ -17,7 +18,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/pion/turn/v2"
 	"golang.org/x/sys/unix"
 )
 

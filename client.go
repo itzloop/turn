@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/itzloop/turn/v2/internal/client"
+	"github.com/itzloop/turn/v2/internal/proto"
 	"github.com/pion/logging"
 	"github.com/pion/stun"
 	"github.com/pion/transport/v2"
 	"github.com/pion/transport/v2/stdnet"
-	"github.com/pion/turn/v2/internal/client"
-	"github.com/pion/turn/v2/internal/proto"
 )
 
 const (

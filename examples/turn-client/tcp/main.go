@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/turn/v2"
 )
 
 func main() {

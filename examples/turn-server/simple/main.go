@@ -13,8 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"syscall"
-
-	"github.com/pion/turn/v2"
 )
 
 func main() {

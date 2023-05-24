@@ -17,8 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-
-	"github.com/pion/turn/v2"
 )
 
 func main() {

@@ -8,13 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/turn/v2/internal/allocation"
-	"github.com/pion/turn/v2/internal/proto"
-	"github.com/pion/turn/v2/internal/server"
+	"github.com/pion/turn/v3/internal/allocation"
+	"github.com/pion/turn/v3/internal/proto"
+	"github.com/pion/turn/v3/internal/server"
 )
 
 const (
@@ -27,7 +26,7 @@ type Server struct {
 	authHandler        AuthHandler
 	realm              string
 	channelBindTimeout time.Duration
-	nonces             *sync.Map
+	nonceHash          *server.NonceHash
 
 	packetConnConfigs  []PacketConnConfig
 	listenerConfigs    []ListenerConfig
@@ -53,6 +52,11 @@ func NewServer(config ServerConfig) (*Server, error) {
 		mtu = config.InboundMTU
 	}
 
+	nonceHash, err := server.NewNonceHash()
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
 		log:                loggerFactory.NewLogger("turn"),
 		authHandler:        config.AuthHandler,
@@ -60,7 +64,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		channelBindTimeout: config.ChannelBindTimeout,
 		packetConnConfigs:  config.PacketConnConfigs,
 		listenerConfigs:    config.ListenerConfigs,
-		nonces:             &sync.Map{},
+		nonceHash:          nonceHash,
 		inboundMTU:         mtu,
 	}
 
@@ -149,16 +153,38 @@ func (s *Server) readListener(l net.Listener, am *allocation.Manager) {
 		go func() {
 			s.readLoop(NewSTUNConn(conn), am)
 
+			// Delete allocation
+			am.DeleteAllocation(&allocation.FiveTuple{
+				Protocol: allocation.UDP, // fixed UDP
+				SrcAddr:  conn.RemoteAddr(),
+				DstAddr:  conn.LocalAddr(),
+			})
+
 			if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				s.log.Errorf("failed to close conn: %s", err)
+				s.log.Errorf("Failed to close conn: %s", err)
 			}
 		}()
 	}
 }
 
+type nilAddressGenerator struct{}
+
+func (n *nilAddressGenerator) Validate() error { return errRelayAddressGeneratorNil }
+
+func (n *nilAddressGenerator) AllocatePacketConn(string, int) (net.PacketConn, net.Addr, error) {
+	return nil, nil, errRelayAddressGeneratorNil
+}
+
+func (n *nilAddressGenerator) AllocateConn(string, int) (net.Conn, net.Addr, error) {
+	return nil, nil, errRelayAddressGeneratorNil
+}
+
 func (s *Server) createAllocationManager(addrGenerator RelayAddressGenerator, handler PermissionHandler) (*allocation.Manager, error) {
 	if handler == nil {
 		handler = DefaultPermissionHandler
+	}
+	if addrGenerator == nil {
+		addrGenerator = &nilAddressGenerator{}
 	}
 
 	am, err := allocation.NewManager(allocation.ManagerConfig{
@@ -183,10 +209,11 @@ func (s *Server) readLoop(p net.PacketConn, allocationManager *allocation.Manage
 		n, addr, err := p.ReadFrom(buf)
 		switch {
 		case err != nil:
-			s.log.Debugf("exit read loop on error: %s", err.Error())
+			s.log.Debugf("Exit read loop on error: %s", err)
 			return
 		case n >= s.inboundMTU:
 			s.log.Debugf("Read bytes exceeded MTU, packet is possibly truncated")
+			continue
 		}
 
 		if err := server.HandleRequest(server.Request{
@@ -198,9 +225,9 @@ func (s *Server) readLoop(p net.PacketConn, allocationManager *allocation.Manage
 			Realm:              s.realm,
 			AllocationManager:  allocationManager,
 			ChannelBindTimeout: s.channelBindTimeout,
-			Nonces:             s.nonces,
+			NonceHash:          s.nonceHash,
 		}); err != nil {
-			s.log.Errorf("error when handling datagram: %v", err)
+			s.log.Errorf("Failed to handle datagram: %v", err)
 		}
 	}
 }

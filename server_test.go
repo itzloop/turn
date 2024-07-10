@@ -9,13 +9,15 @@ package turn
 import (
 	"fmt"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/transport/v2/test"
-	"github.com/pion/transport/v2/vnet"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/transport/v3/test"
+	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/turn/v3/internal/allocation"
+	"github.com/pion/turn/v3/internal/proto"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -37,7 +39,7 @@ func TestServer(t *testing.T) {
 		assert.NoError(t, err)
 
 		server, err := NewServer(ServerConfig{
-			AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+			AuthHandler: func(username, _ string, _ net.Addr) (key []byte, ok bool) {
 				if pw, ok := credMap[username]; ok {
 					return pw, true
 				}
@@ -119,12 +121,99 @@ func TestServer(t *testing.T) {
 		assert.NoError(t, server.Close())
 	})
 
+	t.Run("Delete allocation on spontaneous TCP close", func(t *testing.T) {
+		// Test whether allocation is properly deleted when client spontaneously closes the
+		// TCP connection underlying it
+		tcpListener, err := net.Listen("tcp4", "127.0.0.1:3478")
+		assert.NoError(t, err)
+
+		server, err := NewServer(ServerConfig{
+			AuthHandler: func(username, _ string, _ net.Addr) (key []byte, ok bool) {
+				if pw, ok := credMap[username]; ok {
+					return pw, true
+				}
+				return nil, false
+			},
+			ListenerConfigs: []ListenerConfig{
+				{
+					Listener: tcpListener,
+					RelayAddressGenerator: &RelayAddressGeneratorStatic{
+						RelayAddress: net.ParseIP("127.0.0.1"),
+						Address:      "127.0.0.1",
+					},
+				},
+			},
+			Realm:         "pion.ly",
+			LoggerFactory: loggerFactory,
+		})
+		assert.NoError(t, err)
+
+		// make sure we can reuse the client port
+		dialer := &net.Dialer{
+			Control: func(_, _ string, conn syscall.RawConn) error {
+				return conn.Control(func(descriptor uintptr) {
+					_ = syscall.SetsockoptInt(int(descriptor), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				})
+			},
+		}
+		conn, err := dialer.Dial("tcp", "127.0.0.1:3478")
+		assert.NoError(t, err)
+
+		clientAddr := conn.LocalAddr()
+
+		serverAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:3478")
+		assert.NoError(t, err)
+
+		client, err := NewClient(&ClientConfig{
+			STUNServerAddr: serverAddr.String(),
+			TURNServerAddr: serverAddr.String(),
+			Conn:           NewSTUNConn(conn),
+			Username:       "user",
+			Password:       "pass",
+			Realm:          "pion.ly",
+			LoggerFactory:  loggerFactory,
+		})
+		assert.NoError(t, err)
+		assert.NoError(t, client.Listen())
+
+		_, err = client.SendBindingRequestTo(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3478})
+		assert.NoError(t, err, "should succeed")
+
+		relayConn, err := client.Allocate()
+		assert.NoError(t, err)
+		assert.NotNil(t, relayConn)
+
+		fiveTuple := &allocation.FiveTuple{
+			Protocol: allocation.UDP, // Fixed UDP
+			SrcAddr:  clientAddr,
+			DstAddr:  serverAddr,
+		}
+		// Allocation exists
+		assert.Len(t, server.allocationManagers, 1)
+		assert.NotNil(t, server.allocationManagers[0].GetAllocation(fiveTuple))
+
+		// client.Close()
+		// This should properly close the client and delete the allocation on the server
+		assert.NoError(t, conn.Close())
+
+		// Let connection to properly close
+		time.Sleep(100 * time.Millisecond)
+		// to we still have the allocation on the server?
+		assert.Nil(t, server.allocationManagers[0].GetAllocation(fiveTuple))
+
+		client.Close()
+		// This should err: client connection has gone so we cannot send the Refresh(0)
+		// message
+		assert.Error(t, relayConn.Close())
+		assert.NoError(t, server.Close())
+	})
+
 	t.Run("Filter on client address and peer IP", func(t *testing.T) {
 		udpListener, err := net.ListenPacket("udp4", "0.0.0.0:3478")
 		assert.NoError(t, err)
 
 		server, err := NewServer(ServerConfig{
-			AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+			AuthHandler: func(username, _ string, _ net.Addr) (key []byte, ok bool) {
 				if pw, ok := credMap[username]; ok {
 					return pw, true
 				}
@@ -152,8 +241,7 @@ func TestServer(t *testing.T) {
 		conn, err := net.ListenPacket("udp4", "127.0.0.1:54321")
 		assert.NoError(t, err)
 
-		addr, err := net.ResolveUDPAddr("udp4", "127.0.0.1:3478")
-		assert.NoError(t, err)
+		addr := "127.0.0.1:3478"
 
 		client, err := NewClient(&ClientConfig{
 			STUNServerAddr: addr,
@@ -219,7 +307,7 @@ func TestServer(t *testing.T) {
 		assert.NoError(t, conn.Close())
 
 		// Enforce filtered source address
-		conn2, err := net.ListenPacket("udp4", "127.0.0.133:54321")
+		conn2, err := net.ListenPacket("udp4", "127.0.0.1:12321")
 		assert.NoError(t, err)
 
 		client2, err := NewClient(&ClientConfig{
@@ -365,7 +453,7 @@ func buildVNet() (*VNet, error) {
 	}
 
 	server, err := NewServer(ServerConfig{
-		AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+		AuthHandler: func(username, _ string, _ net.Addr) (key []byte, ok bool) {
 			if pw, ok := credMap[username]; ok {
 				return pw, true
 			}
@@ -433,7 +521,7 @@ func TestServerVNet(t *testing.T) {
 			assert.NoError(t, lconn.Close())
 		}()
 
-		stunAddr, _ := net.ResolveUDPAddr("udp", "1.2.3.4:3478")
+		stunAddr := "1.2.3.4:3478"
 
 		log.Debug("creating a client.")
 		client, err := NewClient(&ClientConfig{
@@ -448,91 +536,13 @@ func TestServerVNet(t *testing.T) {
 		log.Debug("sending a binding request.")
 		reflAddr, err := client.SendBindingRequest()
 		assert.NoError(t, err)
-		log.Debugf("mapped-address: %v", reflAddr.String())
+		log.Debugf("mapped-address: %s", reflAddr)
 		udpAddr, ok := reflAddr.(*net.UDPAddr)
 		assert.True(t, ok)
 
 		// The mapped-address should have IP address that was assigned
 		// to the LAN router.
 		assert.True(t, udpAddr.IP.Equal(net.IPv4(5, 6, 7, 8)), "should match")
-	})
-
-	t.Run("Echo via relay", func(t *testing.T) {
-		v, err := buildVNet()
-		assert.NoError(t, err)
-
-		lconn, err := v.netL0.ListenPacket("udp4", "0.0.0.0:0")
-		assert.NoError(t, err)
-
-		stunAddr, _ := v.netL0.ResolveUDPAddr("udp", "stun.pion.ly:3478")
-		turnAddr, _ := v.netL0.ResolveUDPAddr("udp", "turn.pion.ly:3478")
-
-		log.Debug("creating a client.")
-		client, err := NewClient(&ClientConfig{
-			STUNServerAddr: stunAddr,
-			TURNServerAddr: turnAddr,
-			Username:       "user",
-			Password:       "pass",
-			Conn:           lconn,
-			LoggerFactory:  loggerFactory,
-		})
-
-		assert.NoError(t, err)
-		assert.NoError(t, client.Listen())
-
-		log.Debug("sending a binding request.")
-		conn, err := client.Allocate()
-		assert.NoError(t, err)
-
-		log.Debugf("laddr: %s", conn.LocalAddr().String())
-
-		echoConn, err := v.net1.ListenPacket("udp4", "1.2.3.5:5678")
-		assert.NoError(t, err)
-
-		// Ensure allocation is counted
-		assert.Equal(t, 1, v.server.AllocationCount())
-
-		go func() {
-			buf := make([]byte, 1600)
-			for {
-				n, from, err2 := echoConn.ReadFrom(buf)
-				if err2 != nil {
-					break
-				}
-
-				// Verify the message was received from the relay address
-				assert.Equal(t, conn.LocalAddr().String(), from.String(), "should match")
-				assert.Equal(t, "Hello", string(buf[:n]), "should match")
-
-				// Echo the data
-				_, err2 = echoConn.WriteTo(buf[:n], from)
-				assert.NoError(t, err2)
-			}
-		}()
-
-		buf := make([]byte, 1600)
-
-		for i := 0; i < 10; i++ {
-			log.Debug("sending \"Hello\"..")
-			_, err = conn.WriteTo([]byte("Hello"), echoConn.LocalAddr())
-			assert.NoError(t, err)
-
-			_, from, err2 := conn.ReadFrom(buf)
-			assert.NoError(t, err2)
-
-			// Verify the message was received from the relay address
-			assert.Equal(t, echoConn.LocalAddr().String(), from.String(), "should match")
-
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		time.Sleep(100 * time.Millisecond)
-		client.Close()
-
-		assert.NoError(t, conn.Close(), "should succeed")
-		assert.NoError(t, echoConn.Close(), "should succeed")
-		assert.NoError(t, lconn.Close(), "should succeed")
-		assert.NoError(t, v.Close(), "should succeed")
 	})
 }
 
@@ -560,6 +570,52 @@ func TestConsumeSingleTURNFrame(t *testing.T) {
 	}
 }
 
+func TestSTUNOnly(t *testing.T) {
+	serverAddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:3478")
+	assert.NoError(t, err)
+
+	serverConn, err := net.ListenPacket(serverAddr.Network(), serverAddr.String())
+	assert.NoError(t, err)
+
+	defer serverConn.Close() //nolint:errcheck
+
+	server, err := NewServer(ServerConfig{
+		PacketConnConfigs: []PacketConnConfig{{
+			PacketConn: serverConn,
+		}},
+		Realm:         "pion.ly",
+		LoggerFactory: logging.NewDefaultLoggerFactory(),
+	})
+	assert.NoError(t, err)
+
+	defer server.Close() //nolint:errcheck
+
+	conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	assert.NoError(t, err)
+
+	client, err := NewClient(&ClientConfig{
+		Conn:           conn,
+		STUNServerAddr: "127.0.0.1:3478",
+		TURNServerAddr: "127.0.0.1:3478",
+		Username:       "user",
+		Password:       "pass",
+		Realm:          "pion.ly",
+		LoggerFactory:  logging.NewDefaultLoggerFactory(),
+	})
+	assert.NoError(t, err)
+	assert.NoError(t, client.Listen())
+	defer client.Close()
+
+	reflAddr, err := client.SendBindingRequest()
+	assert.NoError(t, err)
+
+	_, ok := reflAddr.(*net.UDPAddr)
+	assert.True(t, ok)
+
+	_, err = client.Allocate()
+	assert.Equal(t, err.Error(), "Allocate error response (error 400: )")
+}
+
 func RunBenchmarkServer(b *testing.B, clientNum int) {
 	loggerFactory := logging.NewDefaultLoggerFactory()
 	credMap := map[string][]byte{
@@ -581,7 +637,7 @@ func RunBenchmarkServer(b *testing.B, clientNum int) {
 	defer serverConn.Close() //nolint:errcheck
 
 	server, err := NewServer(ServerConfig{
-		AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+		AuthHandler: func(username, _ string, _ net.Addr) (key []byte, ok bool) {
 			if pw, ok := credMap[username]; ok {
 				return pw, true
 			}
@@ -636,8 +692,8 @@ func RunBenchmarkServer(b *testing.B, clientNum int) {
 		defer clientConn.Close() //nolint:errcheck
 
 		client, err := NewClient(&ClientConfig{
-			STUNServerAddr: serverAddr,
-			TURNServerAddr: serverAddr,
+			STUNServerAddr: "127.0.0.1:3478",
+			TURNServerAddr: "127.0.0.1:3478",
 			Conn:           clientConn,
 			Username:       "user",
 			Password:       "pass",

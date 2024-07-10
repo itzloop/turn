@@ -1,11 +1,8 @@
-// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
-// SPDX-License-Identifier: MIT
-
-// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-FileCopyrightText: 2024 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
 // Package main implements a TURN server using
-// long-term credentials.
+// ephemeral credentials.
 package main
 
 import (
@@ -47,11 +44,8 @@ func main() {
 	logger := logging.NewDefaultLeveledLoggerForScope("lt-creds", logging.LogLevelTrace, os.Stdout)
 
 	s, err := turn.NewServer(turn.ServerConfig{
-		Realm: *realm,
-		// Set AuthHandler callback
-		// This is called every time a user tries to authenticate with the TURN server
-		// Return the key for that user, or false when no user is found
-		AuthHandler: turn.NewLongTermAuthHandler(*authSecret, logger),
+		Realm:       *realm,
+		AuthHandler: turn.LongTermTURNRESTAuthHandler(*authSecret, logger),
 		// PacketConnConfigs is a list of UDP Listeners and the configuration around them
 		PacketConnConfigs: []turn.PacketConnConfig{
 			{

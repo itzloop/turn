@@ -6,7 +6,7 @@ package client
 import (
 	"net"
 
-	"github.com/pion/stun"
+	"github.com/pion/stun/v2"
 )
 
 type mockClient struct {
@@ -26,7 +26,7 @@ func (c *mockClient) PerformTransaction(msg *stun.Message, to net.Addr, dontWait
 	if c.performTransaction != nil {
 		return c.performTransaction(msg, to, dontWait)
 	}
-	return TransactionResult{}, nil
+	return TransactionResult{}, errFake
 }
 
 func (c *mockClient) OnDeallocated(relayedAddr net.Addr) {

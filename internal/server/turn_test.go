@@ -8,14 +8,13 @@ package server
 
 import (
 	"net"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/stun"
-	"github.com/pion/turn/v2/internal/allocation"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/stun/v2"
+	"github.com/pion/turn/v3/internal/allocation"
+	"github.com/pion/turn/v3/internal/proto"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -65,7 +64,7 @@ func TestAllocationLifeTime(t *testing.T) {
 		logger := logging.NewDefaultLoggerFactory().NewLogger("turn")
 
 		allocationManager, err := allocation.NewManager(allocation.ManagerConfig{
-			AllocatePacketConn: func(network string, requestedPort int) (net.PacketConn, net.Addr, error) {
+			AllocatePacketConn: func(network string, _ int) (net.PacketConn, net.Addr, error) {
 				conn, listenErr := net.ListenPacket(network, "0.0.0.0:0")
 				if err != nil {
 					return nil, nil, listenErr
@@ -73,25 +72,28 @@ func TestAllocationLifeTime(t *testing.T) {
 
 				return conn, conn.LocalAddr(), nil
 			},
-			AllocateConn: func(network string, requestedPort int) (net.Conn, net.Addr, error) {
+			AllocateConn: func(string, int) (net.Conn, net.Addr, error) {
 				return nil, nil, nil
 			},
 			LeveledLogger: logger,
 		})
 		assert.NoError(t, err)
 
-		staticKey := []byte("ABC")
+		nonceHash, err := NewNonceHash()
+		assert.NoError(t, err)
+		staticKey, err := nonceHash.Generate()
+		assert.NoError(t, err)
+
 		r := Request{
 			AllocationManager: allocationManager,
-			Nonces:            &sync.Map{},
+			NonceHash:         nonceHash,
 			Conn:              l,
 			SrcAddr:           &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5000},
 			Log:               logger,
-			AuthHandler: func(username string, realm string, srcAddr net.Addr) (key []byte, ok bool) {
-				return staticKey, true
+			AuthHandler: func(string, string, net.Addr) (key []byte, ok bool) {
+				return []byte(staticKey), true
 			},
 		}
-		r.Nonces.Store(string(staticKey), time.Now())
 
 		fiveTuple := &allocation.FiveTuple{SrcAddr: r.SrcAddr, DstAddr: r.Conn.LocalAddr(), Protocol: allocation.UDP}
 

@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/stun"
-	"github.com/pion/transport/v2"
-	"github.com/pion/transport/v2/stdnet"
-	"github.com/pion/turn/v2/internal/client"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/stun/v2"
+	"github.com/pion/transport/v3"
+	"github.com/pion/transport/v3/stdnet"
+	"github.com/pion/turn/v3/internal/client"
+	"github.com/pion/turn/v3/internal/proto"
 )
 
 const (
@@ -37,8 +37,8 @@ const (
 
 // ClientConfig is a bag of config parameters for Client.
 type ClientConfig struct {
-	STUNServerAddr net.Addr // STUN server address
-	TURNServerAddr net.Addr // TURN server address
+	STUNServerAddr string // STUN server address (e.g. "stun.abc.com:3478")
+	TURNServerAddr string // TURN server address (e.g. "turn.abc.com:3478")
 	Username       string
 	Password       string
 	Realm          string
@@ -98,10 +98,31 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		config.Net = n
 	}
 
+	var stunServ, turnServ net.Addr
+	var err error
+
+	if len(config.STUNServerAddr) > 0 {
+		stunServ, err = config.Net.ResolveUDPAddr("udp4", config.STUNServerAddr)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Debugf("Resolved STUN server %s to %s", config.STUNServerAddr, stunServ)
+	}
+
+	if len(config.TURNServerAddr) > 0 {
+		turnServ, err = config.Net.ResolveUDPAddr("udp4", config.TURNServerAddr)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Debugf("Resolved TURN server %s to %s", config.TURNServerAddr, turnServ)
+	}
+
 	c := &Client{
 		conn:           config.Conn,
-		stunServerAddr: config.STUNServerAddr,
-		turnServerAddr: config.TURNServerAddr,
+		stunServerAddr: stunServ,
+		turnServerAddr: turnServ,
 		username:       stun.NewUsername(config.Username),
 		password:       config.Password,
 		realm:          stun.NewRealm(config.Realm),
@@ -153,13 +174,13 @@ func (c *Client) Listen() error {
 		for {
 			n, from, err := c.conn.ReadFrom(buf)
 			if err != nil {
-				c.log.Debugf("exiting read loop: %s", err.Error())
+				c.log.Debugf("Failed to read: %s. Exiting loop", err)
 				break
 			}
 
 			_, err = c.HandleInbound(buf[:n], from)
 			if err != nil {
-				c.log.Debugf("exiting read loop: %s", err.Error())
+				c.log.Debugf("Failed to handle inbound message: %s. Exiting loop", err)
 				break
 			}
 		}
@@ -404,7 +425,7 @@ func (c *Client) PerformTransaction(msg *stun.Message, to net.Addr, ignoreResult
 
 	c.trMap.Insert(trKey, tr)
 
-	c.log.Tracef("start %s transaction %s to %s", msg.Type, trKey, tr.To.String())
+	c.log.Tracef("Start %s transaction %s to %s", msg.Type, trKey, tr.To)
 	_, err := c.conn.WriteTo(tr.Raw, to)
 	if err != nil {
 		return client.TransactionResult{}, err
@@ -462,12 +483,12 @@ func (c *Client) HandleInbound(data []byte, from net.Addr) (bool, error) {
 		return true, c.handleSTUNMessage(data, from)
 	case proto.IsChannelData(data):
 		return true, c.handleChannelData(data)
-	case from.String() == c.stunServerAddr.String():
+	case c.stunServerAddr != nil && from.String() == c.stunServerAddr.String():
 		// Received from STUN server but it is not a STUN message
 		return true, errNonSTUNMessage
 	default:
 		// Assume, this is an application data
-		c.log.Tracef("non-STUN/TURN packet, unhandled")
+		c.log.Tracef("Ignoring non-STUN/TURN packet")
 	}
 
 	return false, nil
@@ -503,11 +524,11 @@ func (c *Client) handleSTUNMessage(data []byte, from net.Addr) error {
 				return err
 			}
 
-			c.log.Tracef("data indication received from %s", from.String())
+			c.log.Tracef("Data indication received from %s", from)
 
 			relayedConn := c.relayedUDPConn()
 			if relayedConn == nil {
-				c.log.Debug("no relayed conn allocated")
+				c.log.Debug("No relayed conn allocated")
 				return nil // Silently discard
 			}
 			relayedConn.HandleInbound(data, from)
@@ -527,17 +548,17 @@ func (c *Client) handleSTUNMessage(data []byte, from net.Addr) error {
 				return err
 			}
 
-			c.log.Debugf("connection attempt from %s", addr.String())
+			c.log.Debugf("Connection attempt from %s", addr)
 
 			allocation := c.getTCPAllocation()
 			if allocation == nil {
-				c.log.Debug("no TCP allocation exists")
+				c.log.Debug("No TCP allocation exists")
 				return nil // Silently discard
 			}
 
 			allocation.HandleConnectionAttempt(addr, cid)
 		default:
-			c.log.Debug("received unsupported STUN method")
+			c.log.Debug("Received unsupported STUN method")
 		}
 		return nil
 	}
@@ -554,7 +575,7 @@ func (c *Client) handleSTUNMessage(data []byte, from net.Addr) error {
 	if !ok {
 		c.mutexTrMap.Unlock()
 		// Silently discard
-		c.log.Debugf("no transaction for %s", msg.String())
+		c.log.Debugf("No transaction for %s", msg)
 		return nil
 	}
 
@@ -568,7 +589,7 @@ func (c *Client) handleSTUNMessage(data []byte, from net.Addr) error {
 		From:    from,
 		Retries: tr.Retries(),
 	}) {
-		c.log.Debugf("no listener for %s", msg.String())
+		c.log.Debugf("No listener for %s", msg)
 	}
 
 	return nil
@@ -585,7 +606,7 @@ func (c *Client) handleChannelData(data []byte) error {
 
 	relayedConn := c.relayedUDPConn()
 	if relayedConn == nil {
-		c.log.Debug("no relayed conn allocated")
+		c.log.Debug("No relayed conn allocated")
 		return nil // Silently discard
 	}
 
@@ -594,7 +615,7 @@ func (c *Client) handleChannelData(data []byte) error {
 		return fmt.Errorf("%w: %d", errChannelBindNotFound, int(chData.Number))
 	}
 
-	c.log.Tracef("channel data received from %s (ch=%d)", addr.String(), int(chData.Number))
+	c.log.Tracef("Channel data received from %s (ch=%d)", addr.String(), int(chData.Number))
 
 	relayedConn.HandleInbound(chData.Data, addr)
 	return nil
@@ -615,12 +636,12 @@ func (c *Client) onRtxTimeout(trKey string, nRtx int) {
 		if !tr.WriteResult(client.TransactionResult{
 			Err: fmt.Errorf("%w %s", errAllRetransmissionsFailed, trKey),
 		}) {
-			c.log.Debug("no listener for transaction")
+			c.log.Debug("No listener for transaction")
 		}
 		return
 	}
 
-	c.log.Tracef("retransmitting transaction %s to %s (nRtx=%d)",
+	c.log.Tracef("Retransmitting transaction %s to %s (nRtx=%d)",
 		trKey, tr.To.String(), nRtx)
 	_, err := c.conn.WriteTo(tr.Raw, tr.To)
 	if err != nil {
@@ -628,7 +649,7 @@ func (c *Client) onRtxTimeout(trKey string, nRtx int) {
 		if !tr.WriteResult(client.TransactionResult{
 			Err: fmt.Errorf("%w %s", errFailedToRetransmitTransaction, trKey),
 		}) {
-			c.log.Debug("no listener for transaction")
+			c.log.Debug("No listener for transaction")
 		}
 		return
 	}

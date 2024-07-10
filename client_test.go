@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/stun"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/stun/v2"
+	"github.com/pion/turn/v3/internal/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,10 +41,7 @@ func createListeningTestClientWithSTUNServ(t *testing.T, loggerFactory logging.L
 	conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
 	assert.NoError(t, err)
 
-	addr, err := net.ResolveUDPAddr("udp", "stun1.l.google.com:19302")
-	if err != nil {
-		t.Fatalf("failed to resolve: %s", err)
-	}
+	addr := "stun1.l.google.com:19302"
 
 	c, err := NewClient(&ClientConfig{
 		STUNServerAddr: addr,
@@ -70,7 +67,7 @@ func TestClientWithSTUN(t *testing.T) {
 
 		resp, err := c.SendBindingRequest()
 		assert.NoError(t, err, "should succeed")
-		log.Debugf("mapped-addr: %s", resp.String())
+		log.Debugf("mapped-addr: %s", resp)
 		assert.Equal(t, 0, c.trMap.Size(), "should be no transaction left")
 		assert.NoError(t, pc.Close())
 	})
@@ -145,7 +142,7 @@ func TestClientNonceExpiration(t *testing.T) {
 	assert.NoError(t, err)
 
 	server, err := NewServer(ServerConfig{
-		AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+		AuthHandler: func(username, realm string, _ net.Addr) (key []byte, ok bool) {
 			return GenerateAuthKey(username, realm, "pass"), true
 		},
 		PacketConnConfigs: []PacketConnConfig{
@@ -164,10 +161,8 @@ func TestClientNonceExpiration(t *testing.T) {
 	conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
 	assert.NoError(t, err)
 
-	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:3478")
-	if err != nil {
-		t.Fatalf("failed to resolve: %s", err)
-	}
+	// nolint: goconst
+	addr := "127.0.0.1:3478"
 
 	client, err := NewClient(&ClientConfig{
 		Conn:           conn,
@@ -181,11 +176,6 @@ func TestClientNonceExpiration(t *testing.T) {
 
 	allocation, err := client.Allocate()
 	assert.NoError(t, err)
-
-	server.nonces.Range(func(key, value interface{}) bool {
-		server.nonces.Delete(key)
-		return true
-	})
 
 	_, err = allocation.WriteTo([]byte{0x00}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080})
 	assert.NoError(t, err)
@@ -203,7 +193,7 @@ func TestTCPClient(t *testing.T) {
 	require.NoError(t, err)
 
 	server, err := NewServer(ServerConfig{
-		AuthHandler: func(username, realm string, srcAddr net.Addr) (key []byte, ok bool) {
+		AuthHandler: func(username, realm string, _ net.Addr) (key []byte, ok bool) {
 			return GenerateAuthKey(username, realm, "pass"), true
 		},
 		ListenerConfigs: []ListenerConfig{
@@ -223,7 +213,7 @@ func TestTCPClient(t *testing.T) {
 	conn, err := net.Dial("tcp", "127.0.0.1:13478")
 	require.NoError(t, err)
 
-	serverAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:13478")
+	serverAddr := "127.0.0.1:13478"
 	require.NoError(t, err)
 
 	client, err := NewClient(&ClientConfig{
@@ -236,7 +226,7 @@ func TestTCPClient(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, client.Listen())
 
-	require.Equal(t, serverAddr, client.STUNServerAddr())
+	require.Equal(t, serverAddr, client.STUNServerAddr().String())
 
 	allocation, err := client.AllocateTCP()
 	require.NoError(t, err)

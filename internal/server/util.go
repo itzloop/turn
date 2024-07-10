@@ -4,44 +4,18 @@
 package server
 
 import (
-	"crypto/md5" //nolint:gosec,gci
 	"errors"
 	"fmt"
-	"io"
-	"math/rand"
 	"net"
-	"strconv"
 	"time"
 
-	"github.com/pion/stun"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/stun/v2"
+	"github.com/pion/turn/v3/internal/proto"
 )
 
 const (
 	maximumAllocationLifetime = time.Hour // See: https://tools.ietf.org/html/rfc5766#section-6.2 defines 3600 seconds recommendation
-	nonceLifetime             = time.Hour // See: https://tools.ietf.org/html/rfc5766#section-4
 )
-
-func randSeq(n int) string {
-	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))] //nolint:gosec
-	}
-	return string(b)
-}
-
-func buildNonce() (string, error) {
-	/* #nosec */
-	h := md5.New()
-	if _, err := io.WriteString(h, strconv.FormatInt(time.Now().Unix(), 10)); err != nil {
-		return "", fmt.Errorf("%w: %v", errFailedToGenerateNonce, err) //nolint:errorlint
-	}
-	if _, err := io.WriteString(h, strconv.FormatInt(rand.Int63(), 10)); err != nil { //nolint:gosec
-		return "", fmt.Errorf("%w: %v", errFailedToGenerateNonce, err) //nolint:errorlint
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
 
 func buildAndSend(conn net.PacketConn, dst net.Addr, attrs ...stun.Setter) error {
 	msg, err := stun.Build(attrs...)
@@ -70,14 +44,9 @@ func buildMsg(transactionID [stun.TransactionIDSize]byte, msgType stun.MessageTy
 
 func authenticateRequest(r Request, m *stun.Message, callingMethod stun.Method) (stun.MessageIntegrity, bool, error) {
 	respondWithNonce := func(responseCode stun.ErrorCode) (stun.MessageIntegrity, bool, error) {
-		nonce, err := buildNonce()
+		nonce, err := r.NonceHash.Generate()
 		if err != nil {
 			return nil, false, err
-		}
-
-		// Nonce has already been taken
-		if _, keyCollision := r.Nonces.LoadOrStore(nonce, time.Now()); keyCollision {
-			return nil, false, errDuplicatedNonce
 		}
 
 		return nil, false, buildAndSend(r.Conn, r.SrcAddr, buildMsg(m.TransactionID,
@@ -97,19 +66,19 @@ func authenticateRequest(r Request, m *stun.Message, callingMethod stun.Method) 
 	realmAttr := &stun.Realm{}
 	badRequestMsg := buildMsg(m.TransactionID, stun.NewType(callingMethod, stun.ClassErrorResponse), &stun.ErrorCodeAttribute{Code: stun.CodeBadRequest})
 
+	// No Auth handler is set, server is running in STUN only mode
+	// Respond with 400 so clients don't retry
+	if r.AuthHandler == nil {
+		sendErr := buildAndSend(r.Conn, r.SrcAddr, badRequestMsg...)
+		return nil, false, sendErr
+	}
+
 	if err := nonceAttr.GetFrom(m); err != nil {
 		return nil, false, buildAndSendErr(r.Conn, r.SrcAddr, err, badRequestMsg...)
 	}
 
-	// Assert Nonce exists and is not expired
-	nonceCreationTime, nonceFound := r.Nonces.Load(string(*nonceAttr))
-	if !nonceFound {
-		r.Nonces.Delete(nonceAttr)
-		return respondWithNonce(stun.CodeStaleNonce)
-	}
-
-	if timeValue, ok := nonceCreationTime.(time.Time); !ok || time.Since(timeValue) >= nonceLifetime {
-		r.Nonces.Delete(nonceAttr)
+	// Assert Nonce is signed and is not expired
+	if err := r.NonceHash.Validate(nonceAttr.String()); err != nil {
 		return respondWithNonce(stun.CodeStaleNonce)
 	}
 

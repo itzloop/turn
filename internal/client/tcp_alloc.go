@@ -11,9 +11,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/pion/stun"
-	"github.com/pion/transport/v2"
-	"github.com/pion/turn/v2/internal/proto"
+	"github.com/pion/stun/v2"
+	"github.com/pion/transport/v3"
+	"github.com/pion/turn/v3/internal/proto"
 )
 
 var (
@@ -147,6 +147,11 @@ func (a *TCPAllocation) DialWithConn(conn net.Conn, network, rAddrStr string) (*
 func (a *TCPAllocation) DialTCP(network string, lAddr, rAddr *net.TCPAddr) (*TCPConn, error) {
 	var rAddrServer *net.TCPAddr
 	if addr, ok := a.serverAddr.(*net.TCPAddr); ok {
+		rAddrServer = &net.TCPAddr{
+			IP:   addr.IP,
+			Port: addr.Port,
+		}
+	} else if addr, ok := a.serverAddr.(*net.UDPAddr); ok {
 		rAddrServer = &net.TCPAddr{
 			IP:   addr.IP,
 			Port: addr.Port,

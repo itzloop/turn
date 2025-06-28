@@ -15,6 +15,7 @@ import (
 	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v4/internal/allocation"
 	"github.com/pion/turn/v4/internal/proto"
+	"github.com/pion/turn/v4/stats"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -70,6 +71,7 @@ func TestAllocationLifeTime(t *testing.T) {
 				return nil, nil, nil
 			},
 			LeveledLogger: logger,
+			StatsRecorder: &stats.NoopStatsRecorder{},
 		})
 		assert.NoError(t, err)
 

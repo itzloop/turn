@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"github.com/pion/turn/v4/stats"
 )
 
 // ManagerConfig a bag of config params for Manager.
@@ -18,6 +19,8 @@ type ManagerConfig struct {
 	AllocatePacketConn func(network string, requestedPort int) (net.PacketConn, net.Addr, error)
 	AllocateConn       func(network string, requestedPort int) (net.Conn, net.Addr, error)
 	PermissionHandler  func(sourceAddr net.Addr, peerIP net.IP) bool
+	StatsRecorder      stats.StatsRecorder
+	Realm              string
 }
 
 type reservation struct {
@@ -36,6 +39,9 @@ type Manager struct {
 	allocatePacketConn func(network string, requestedPort int) (net.PacketConn, net.Addr, error)
 	allocateConn       func(network string, requestedPort int) (net.Conn, net.Addr, error)
 	permissionHandler  func(sourceAddr net.Addr, peerIP net.IP) bool
+
+	statsRecorder stats.StatsRecorder
+	realm         string
 }
 
 // NewManager creates a new instance of Manager.
@@ -49,12 +55,17 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		return nil, errLeveledLoggerMustBeSet
 	}
 
+	if config.StatsRecorder == nil {
+		config.StatsRecorder = &stats.NoopStatsRecorder{}
+	}
+
 	return &Manager{
 		log:                config.LeveledLogger,
 		allocations:        make(map[FiveTupleFingerprint]*Allocation, 64),
 		allocatePacketConn: config.AllocatePacketConn,
 		allocateConn:       config.AllocateConn,
 		permissionHandler:  config.PermissionHandler,
+		statsRecorder:      config.StatsRecorder,
 	}, nil
 }
 
@@ -131,6 +142,8 @@ func (m *Manager) CreateAllocation(
 	m.allocations[fiveTuple.Fingerprint()] = alloc
 	m.lock.Unlock()
 
+	m.statsRecorder.IncActiveAllocation(m.realm, stats.TurnTransportUDP, stats.IPVersion4)
+
 	go alloc.packetHandler(m)
 
 	return alloc, nil
@@ -148,6 +161,13 @@ func (m *Manager) DeleteAllocation(fiveTuple *FiveTuple) {
 	if allocation == nil {
 		return
 	}
+
+	m.statsRecorder.DecActiveAllocation(m.realm, stats.TurnTransportUDP, stats.IPVersion4)
+	m.statsRecorder.AddAllocationDuration(
+		m.realm,
+		time.Since(allocation.creation),
+		stats.TurnTransportUDP,
+		stats.IPVersion4)
 
 	if err := allocation.Close(); err != nil {
 		m.log.Errorf("Failed to close allocation: %v", err)

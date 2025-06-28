@@ -13,6 +13,7 @@ import (
 	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v4/internal/allocation"
 	"github.com/pion/turn/v4/internal/proto"
+	"github.com/pion/turn/v4/stats"
 )
 
 // Request contains all the state needed to process a single incoming datagram.
@@ -31,6 +32,8 @@ type Request struct {
 	Log                logging.LeveledLogger
 	Realm              string
 	ChannelBindTimeout time.Duration
+
+	StatsRecorder stats.StatsRecorder
 }
 
 // HandleRequest processes the give Request.
@@ -46,14 +49,20 @@ func HandleRequest(r Request) error {
 
 func handleDataPacket(req Request) error {
 	req.Log.Debugf("Received DataPacket from %s", req.SrcAddr.String())
+	req.StatsRecorder.IncTotalChannelData(req.Realm)
 	c := proto.ChannelData{Raw: req.Buff}
 	if err := c.Decode(); err != nil {
-		return fmt.Errorf("%w: %v", errFailedToCreateChannelData, err) //nolint:errorlint
+		// TODO: more data for ChannelData?
+		err = fmt.Errorf("%w: %v", errFailedToCreateChannelData, err) //nolint:errorlint
+		req.StatsRecorder.IncFailedChannelData(req.Realm, err)
+
+		return err
 	}
 
 	err := handleChannelData(req, &c)
 	if err != nil {
 		err = fmt.Errorf("%w from %v: %v", errUnableToHandleChannelData, req.SrcAddr, err) //nolint:errorlint
+		req.StatsRecorder.IncFailedChannelData(req.Realm, err)
 	}
 
 	return err
@@ -64,13 +73,23 @@ func handleTURNPacket(req Request) error {
 	stunMsg := &stun.Message{Raw: append([]byte{}, req.Buff...)}
 	if err := stunMsg.Decode(); err != nil {
 		// nolint:errorlint
-		return fmt.Errorf("%w: %v", errFailedToCreateSTUNPacket, err)
+		req.StatsRecorder.IncTotalMessage(req.Realm, stats.ClassUnknown, stats.MethodUnknown)
+		err = fmt.Errorf("%w: %v", errFailedToCreateSTUNPacket, err)
+		req.StatsRecorder.IncFailedMessage(req.Realm, stats.ClassUnknown, stats.MethodUnknown, err)
+
+		return err
 	}
+
+	req.StatsRecorder.IncTotalMessage(
+		req.Realm,
+		stats.StatsMessageClass(stunMsg.Type.Class),
+		stats.StatsMethod(stunMsg.Type.Method),
+	)
 
 	handler, err := getMessageHandler(stunMsg.Type.Class, stunMsg.Type.Method)
 	if err != nil {
 		// nolint:errorlint
-		return fmt.Errorf(
+		err = fmt.Errorf(
 			"%w %v-%v from %v: %v",
 			errUnhandledSTUNPacket,
 			stunMsg.Type.Method,
@@ -78,12 +97,21 @@ func handleTURNPacket(req Request) error {
 			req.SrcAddr,
 			err,
 		)
+
+		req.StatsRecorder.IncFailedMessage(
+			req.Realm,
+			stats.StatsMessageClass(stunMsg.Type.Class),
+			stats.StatsMethod(stunMsg.Type.Method),
+			err,
+		)
+
+		return err
 	}
 
 	err = handler(req, stunMsg)
 	if err != nil {
 		// nolint:errorlint
-		return fmt.Errorf(
+		err = fmt.Errorf(
 			"%w %v-%v from %v: %v",
 			errFailedToHandle,
 			stunMsg.Type.Method,
@@ -91,6 +119,15 @@ func handleTURNPacket(req Request) error {
 			req.SrcAddr,
 			err,
 		)
+
+		req.StatsRecorder.IncFailedMessage(
+			req.Realm,
+			stats.StatsMessageClass(stunMsg.Type.Class),
+			stats.StatsMethod(stunMsg.Type.Method),
+			err,
+		)
+
+		return err
 	}
 
 	return nil

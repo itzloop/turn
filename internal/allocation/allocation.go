@@ -14,6 +14,7 @@ import (
 	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v4/internal/ipnet"
 	"github.com/pion/turn/v4/internal/proto"
+	"github.com/pion/turn/v4/stats"
 )
 
 type allocationResponse struct {
@@ -36,6 +37,7 @@ type Allocation struct {
 	lifetimeTimer       *time.Timer
 	closed              chan any
 	log                 logging.LeveledLogger
+	creation            time.Time
 
 	// Some clients (Firefox or others using resiprocate's nICE lib) may retry allocation
 	// with same 5 tuple when received 413, for compatible with these clients,
@@ -52,6 +54,7 @@ func NewAllocation(turnSocket net.PacketConn, fiveTuple *FiveTuple, log logging.
 		permissions: make(map[string]*Permission, 64),
 		closed:      make(chan any),
 		log:         log,
+		creation:    time.Now(),
 	}
 }
 
@@ -254,6 +257,18 @@ func (a *Allocation) packetHandler(manager *Manager) {
 			n,
 			srcAddr)
 
+		manager.statsRecorder.IncRelayBytes(
+			manager.realm,
+			n,
+			stats.RelayDirectionPeerToServer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+		manager.statsRecorder.IncRelayPackets(
+			manager.realm,
+			stats.RelayDirectionPeerToServer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+
 		if channel := a.GetChannelByAddr(srcAddr); channel != nil { // nolint:nestif
 			channelData := &proto.ChannelData{
 				Data:   buffer[:n],
@@ -263,6 +278,18 @@ func (a *Allocation) packetHandler(manager *Manager) {
 
 			if _, err = a.TurnSocket.WriteTo(channelData.Raw, a.fiveTuple.SrcAddr); err != nil {
 				a.log.Errorf("Failed to send ChannelData from allocation %v %v", srcAddr, err)
+			} else {
+				manager.statsRecorder.IncRelayBytes(
+					manager.realm,
+					n,
+					stats.RelayDirectionServerToClient,
+					stats.TurnTransportUDP,
+					stats.IPVersion4)
+				manager.statsRecorder.IncRelayPackets(
+					manager.realm,
+					stats.RelayDirectionServerToClient,
+					stats.TurnTransportUDP,
+					stats.IPVersion4)
 			}
 		} else if p := a.GetPermission(srcAddr); p != nil {
 			udpAddr, ok := srcAddr.(*net.UDPAddr)
@@ -291,6 +318,18 @@ func (a *Allocation) packetHandler(manager *Manager) {
 				a.fiveTuple.SrcAddr)
 			if _, err = a.TurnSocket.WriteTo(msg.Raw, a.fiveTuple.SrcAddr); err != nil {
 				a.log.Errorf("Failed to send DataIndication from allocation %v %v", srcAddr, err)
+			} else {
+				manager.statsRecorder.IncRelayBytes(
+					manager.realm,
+					n,
+					stats.RelayDirectionServerToClient,
+					stats.TurnTransportUDP,
+					stats.IPVersion4)
+				manager.statsRecorder.IncRelayPackets(
+					manager.realm,
+					stats.RelayDirectionServerToClient,
+					stats.TurnTransportUDP,
+					stats.IPVersion4)
 			}
 		} else {
 			a.log.Infof("No Permission or Channel exists for %v on allocation %v", srcAddr, a.RelayAddr)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/pion/logging"
 	"github.com/pion/turn/v4/internal/proto"
+	"github.com/pion/turn/v4/stats"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -187,7 +188,8 @@ func newTestManager() (*Manager, error) {
 
 			return conn, conn.LocalAddr(), nil
 		},
-		AllocateConn: func(string, int) (net.Conn, net.Addr, error) { return nil, nil, nil },
+		AllocateConn:  func(string, int) (net.Conn, net.Addr, error) { return nil, nil, nil },
+		StatsRecorder: &stats.NoopStatsRecorder{},
 	}
 
 	return NewManager(config)

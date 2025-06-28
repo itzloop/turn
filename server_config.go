@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"github.com/pion/turn/v4/stats"
 )
 
 // RelayAddressGenerator is used to generate a RelayAddress when creating an allocation.
@@ -130,6 +131,8 @@ type ServerConfig struct {
 
 	// Sets the server inbound MTU(Maximum transmition unit). Defaults to 1600 bytes.
 	InboundMTU int
+
+	StatsRecoder stats.StatsRecorder
 }
 
 func (s *ServerConfig) validate() error {

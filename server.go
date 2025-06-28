@@ -14,6 +14,7 @@ import (
 	"github.com/pion/turn/v4/internal/allocation"
 	"github.com/pion/turn/v4/internal/proto"
 	"github.com/pion/turn/v4/internal/server"
+	"github.com/pion/turn/v4/stats"
 )
 
 const (
@@ -32,6 +33,7 @@ type Server struct {
 	listenerConfigs    []ListenerConfig
 	allocationManagers []*allocation.Manager
 	inboundMTU         int
+	statsRecorder      stats.StatsRecorder
 }
 
 // NewServer creates the Pion TURN server.
@@ -55,6 +57,10 @@ func NewServer(config ServerConfig) (*Server, error) { //nolint:gocognit,cyclop
 		return nil, err
 	}
 
+	if config.StatsRecoder == nil {
+		config.StatsRecoder = &stats.NoopStatsRecorder{}
+	}
+
 	server := &Server{
 		log:                loggerFactory.NewLogger("turn"),
 		authHandler:        config.AuthHandler,
@@ -64,6 +70,7 @@ func NewServer(config ServerConfig) (*Server, error) { //nolint:gocognit,cyclop
 		listenerConfigs:    config.ListenerConfigs,
 		nonceHash:          nonceHash,
 		inboundMTU:         mtu,
+		statsRecorder:      config.StatsRecoder,
 	}
 
 	if server.channelBindTimeout == 0 {
@@ -197,6 +204,8 @@ func (s *Server) createAllocationManager(
 		AllocateConn:       addrGenerator.AllocateConn,
 		PermissionHandler:  handler,
 		LeveledLogger:      s.log,
+		Realm:              s.realm,
+		StatsRecorder:      s.statsRecorder,
 	})
 	if err != nil {
 		return am, err
@@ -222,6 +231,18 @@ func (s *Server) readLoop(conn net.PacketConn, allocationManager *allocation.Man
 			continue
 		}
 
+		s.statsRecorder.IncRelayBytes(
+			s.realm,
+			n,
+			stats.RelayDirectionClientToServer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+		s.statsRecorder.IncRelayPackets(
+			s.realm,
+			stats.RelayDirectionClientToServer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+
 		if err := server.HandleRequest(server.Request{
 			Conn:               conn,
 			SrcAddr:            addr,
@@ -232,6 +253,7 @@ func (s *Server) readLoop(conn net.PacketConn, allocationManager *allocation.Man
 			AllocationManager:  allocationManager,
 			ChannelBindTimeout: s.channelBindTimeout,
 			NonceHash:          s.nonceHash,
+			StatsRecorder:      s.statsRecorder,
 		}); err != nil {
 			s.log.Debugf("Failed to handle datagram: %v", err)
 		}

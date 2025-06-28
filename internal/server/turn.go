@@ -12,14 +12,17 @@ import (
 	"github.com/pion/turn/v4/internal/allocation"
 	"github.com/pion/turn/v4/internal/ipnet"
 	"github.com/pion/turn/v4/internal/proto"
+	"github.com/pion/turn/v4/stats"
 )
 
 const runesAlpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 // See: https://tools.ietf.org/html/rfc5766#section-6.2
 // .
-func handleAllocateRequest(req Request, stunMsg *stun.Message) error { //nolint:cyclop
+func handleAllocateRequest(req Request, stunMsg *stun.Message) (err error) { //nolint:cyclop
 	req.Log.Debugf("Received AllocateRequest from %s", req.SrcAddr)
+
+	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
 
 	// 1. The server MUST require that the request be authenticated.  This
 	//    authentication MUST be done using the long-term credential
@@ -28,8 +31,17 @@ func handleAllocateRequest(req Request, stunMsg *stun.Message) error { //nolint:
 	//    some procedure outside the scope of this document.
 	messageIntegrity, hasAuth, err := authenticateRequest(req, stunMsg, stun.MethodAllocate)
 	if !hasAuth {
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureAuth, err)
 		return err
 	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureAllocation, err)
+	}()
 
 	fiveTuple := &allocation.FiveTuple{
 		SrcAddr:  req.SrcAddr,
@@ -259,8 +271,17 @@ func handleRefreshRequest(req Request, stunMsg *stun.Message) error {
 	)
 }
 
-func handleCreatePermissionRequest(req Request, stunMsg *stun.Message) error {
+func handleCreatePermissionRequest(req Request, stunMsg *stun.Message) (err error) {
 	req.Log.Debugf("Received CreatePermission from %s", req.SrcAddr)
+
+	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureCreatePermission, err)
+	}()
 
 	alloc := req.AllocationManager.GetAllocation(&allocation.FiveTuple{
 		SrcAddr:  req.SrcAddr,
@@ -320,8 +341,17 @@ func handleCreatePermissionRequest(req Request, stunMsg *stun.Message) error {
 	)
 }
 
-func handleSendIndication(req Request, stunMsg *stun.Message) error {
+func handleSendIndication(req Request, stunMsg *stun.Message) (err error) {
 	req.Log.Debugf("Received SendIndication from %s", req.SrcAddr)
+	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureSendIndicaton, err)
+	}()
+
 	alloc := req.AllocationManager.GetAllocation(&allocation.FiveTuple{
 		SrcAddr:  req.SrcAddr,
 		DstAddr:  req.Conn.LocalAddr(),
@@ -351,11 +381,35 @@ func handleSendIndication(req Request, stunMsg *stun.Message) error {
 		return fmt.Errorf("%w %d != %d (expected) err: %v", errShortWrite, l, len(dataAttr), err) //nolint:errorlint
 	}
 
+	if err == nil {
+		req.StatsRecorder.IncRelayBytes(
+			req.Realm,
+			l,
+			stats.RelayDirectionServerToPeer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+		req.StatsRecorder.IncRelayPackets(
+			req.Realm,
+			stats.RelayDirectionServerToPeer,
+			stats.TurnTransportUDP,
+			stats.IPVersion4)
+	}
+
+
 	return err
 }
 
-func handleChannelBindRequest(req Request, stunMsg *stun.Message) error {
+func handleChannelBindRequest(req Request, stunMsg *stun.Message) (err error) {
 	req.Log.Debugf("Received ChannelBindRequest from %s", req.SrcAddr)
+
+	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureSendIndicaton, err)
+	}()
 
 	alloc := req.AllocationManager.GetAllocation(&allocation.FiveTuple{
 		SrcAddr:  req.SrcAddr,

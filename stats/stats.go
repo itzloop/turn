@@ -1,4 +1,5 @@
-// Package stats TODO
+// SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
 package stats
 
 import (

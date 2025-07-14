@@ -32,6 +32,7 @@ func handleAllocateRequest(req Request, stunMsg *stun.Message) (err error) { //n
 	messageIntegrity, hasAuth, err := authenticateRequest(req, stunMsg, stun.MethodAllocate)
 	if !hasAuth {
 		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureAuth, err)
+
 		return err
 	}
 
@@ -229,8 +230,17 @@ func handleAllocateRequest(req Request, stunMsg *stun.Message) (err error) { //n
 	return buildAndSend(req.Conn, req.SrcAddr, msg...)
 }
 
-func handleRefreshRequest(req Request, stunMsg *stun.Message) error {
+func handleRefreshRequest(req Request, stunMsg *stun.Message) (err error) {
 	req.Log.Debugf("Received RefreshRequest from %s", req.SrcAddr)
+
+	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		req.StatsRecorder.IncFailedTurn(req.Realm, stunMsg.Type, stats.TurnFailureRefresh, err)
+	}()
 
 	messageIntegrity, hasAuth, err := authenticateRequest(req, stunMsg, stun.MethodRefresh)
 	if !hasAuth {
@@ -274,9 +284,10 @@ func handleRefreshRequest(req Request, stunMsg *stun.Message) error {
 func handleCreatePermissionRequest(req Request, stunMsg *stun.Message) (err error) {
 	req.Log.Debugf("Received CreatePermission from %s", req.SrcAddr)
 
+	var respClass stun.MessageClass
 	req.StatsRecorder.IncTotalTurn(req.Realm, stunMsg.Type)
 	defer func() {
-		if err == nil {
+		if err == nil && respClass != stun.ClassErrorResponse {
 			return
 		}
 
@@ -328,7 +339,7 @@ func handleCreatePermissionRequest(req Request, stunMsg *stun.Message) (err erro
 		addCount = 0
 	}
 
-	respClass := stun.ClassSuccessResponse
+	respClass = stun.ClassSuccessResponse
 	if addCount == 0 {
 		respClass = stun.ClassErrorResponse
 	}
@@ -394,7 +405,6 @@ func handleSendIndication(req Request, stunMsg *stun.Message) (err error) {
 			stats.TurnTransportUDP,
 			stats.IPVersion4)
 	}
-
 
 	return err
 }

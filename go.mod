@@ -1,6 +1,8 @@
 module github.com/pion/turn/v4
 
-go 1.20
+go 1.23
+
+toolchain go1.24.4
 
 require (
 	github.com/pion/logging v0.2.4
@@ -16,6 +18,7 @@ require (
 	github.com/pion/dtls/v3 v3.0.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
+	go.uber.org/mock v0.5.2 // indirect
 	golang.org/x/crypto v0.32.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

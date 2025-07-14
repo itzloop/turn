@@ -89,6 +89,7 @@ func TestAllocationLifeTime(t *testing.T) {
 			AuthHandler: func(string, string, net.Addr) (key []byte, ok bool) {
 				return []byte(staticKey), true
 			},
+			StatsRecorder: &stats.NoopStatsRecorder{},
 		}
 
 		fiveTuple := &allocation.FiveTuple{SrcAddr: req.SrcAddr, DstAddr: req.Conn.LocalAddr(), Protocol: allocation.UDP}

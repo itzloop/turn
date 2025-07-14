@@ -3,6 +3,7 @@
 package stats
 
 import (
+	"net"
 	"time"
 
 	"github.com/pion/stun/v3"
@@ -20,6 +21,7 @@ const (
 	MethodUnknown StatsMethod = 0xFFFF
 )
 
+//go:generate stringer -type=TurnFailureReason,RelayDirection -output enums.go
 type TurnFailureReason int
 
 const (
@@ -30,6 +32,7 @@ const (
 	TurnFailureSendIndicaton
 	TurnFailureChannelBindRequest
 	TurnFailureChannelData
+	TurnFailureRefresh
 )
 
 type TurnTransport string
@@ -62,6 +65,8 @@ const (
 // Each method is meant to be called in response to specific runtime events.
 // Implementations can use this interface to expose metrics to Prometheus,
 // log data for observability, or plug into external monitoring systems.
+//
+//go:generate mockgen -source=stats.go -destination=./stats_mock.go -typed -package=stats
 type StatsRecorder interface {
 	IncTotalMessage(realm string, c StatsMessageClass, m StatsMethod)
 	IncFailedMessage(realm string, c StatsMessageClass, s StatsMethod, err error)
@@ -105,4 +110,75 @@ func (*NoopStatsRecorder) IncRelayPackets(realm string, dir RelayDirection, tran
 }
 
 func (*NoopStatsRecorder) AddAllocationDuration(realm string, d time.Duration, transport TurnTransport, ipv IPVersion) {
+}
+
+type StatsPacketConn struct {
+	net.PacketConn
+	statsRecorder StatsRecorder
+	turnSocket    bool
+	realm         string
+}
+
+func NewStatsPacketConn(
+	c net.PacketConn,
+	statsRecorder StatsRecorder,
+	realm string,
+	turnSocket bool,
+) *StatsPacketConn {
+	return &StatsPacketConn{
+		PacketConn:    c,
+		statsRecorder: statsRecorder,
+		turnSocket:    turnSocket,
+		realm:         realm,
+	}
+}
+
+func (sconn *StatsPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	n, addr, err = sconn.PacketConn.ReadFrom(p)
+
+	direction := RelayDirectionPeerToServer
+	if sconn.turnSocket {
+		direction = RelayDirectionClientToServer
+	}
+
+	sconn.statsRecorder.IncRelayBytes(
+		sconn.realm,
+		n,
+		direction,
+		TurnTransportUDP,
+		IPVersion4,
+	)
+
+	sconn.statsRecorder.IncRelayPackets(
+		sconn.realm,
+		direction,
+		TurnTransportUDP,
+		IPVersion4,
+	)
+
+	return
+}
+
+func (sconn *StatsPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	n, err = sconn.PacketConn.WriteTo(p, addr)
+
+	direction := RelayDirectionServerToPeer
+	if sconn.turnSocket {
+		direction = RelayDirectionServerToClient
+	}
+	sconn.statsRecorder.IncRelayBytes(
+		sconn.realm,
+		n,
+		direction,
+		TurnTransportUDP,
+		IPVersion4,
+	)
+	sconn.statsRecorder.IncRelayPackets(
+		sconn.realm,
+		direction,
+		TurnTransportUDP,
+		IPVersion4,
+	)
+
+	return
 }

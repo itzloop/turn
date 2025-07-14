@@ -66,6 +66,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		allocateConn:       config.AllocateConn,
 		permissionHandler:  config.PermissionHandler,
 		statsRecorder:      config.StatsRecorder,
+		realm:              config.Realm,
 	}, nil
 }
 

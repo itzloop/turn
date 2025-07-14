@@ -244,7 +244,12 @@ func (s *Server) readLoop(conn net.PacketConn, allocationManager *allocation.Man
 			stats.IPVersion4)
 
 		if err := server.HandleRequest(server.Request{
-			Conn:               conn,
+			Conn: stats.NewStatsPacketConn(
+				conn,
+				s.statsRecorder,
+				s.realm,
+				true,
+			),
 			SrcAddr:            addr,
 			Buff:               buf[:n],
 			Log:                s.log,
